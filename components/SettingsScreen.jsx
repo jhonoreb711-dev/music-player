@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Pressable,
   Platform,
@@ -12,7 +12,11 @@ import { ImageBackground } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as DocumentPicker from 'expo-document-picker';
+import { File, Paths } from 'expo-file-system';
 import { usePlayback } from './PlaybackContext';
+import { HOME_VIDEO_NAME_KEY, HOME_VIDEO_URI_KEY } from './homeVideoStorage';
 
 import christmasBackground from '../assets/christmas_bg4.png';
 
@@ -20,8 +24,68 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const [statusMessage, setStatusMessage] = useState('');
   const [isScanning, setIsScanning] = useState(false);
+  const [homeVideoName, setHomeVideoName] = useState('youtube-video.mp4');
+  const [isChoosingVideo, setIsChoosingVideo] = useState(false);
   const scanInProgress = useRef(false);
   const { tracks, musicFolderName, chooseMusicFolder, rescanMusicFolder, addAudioFiles } = usePlayback();
+
+  useEffect(() => {
+    AsyncStorage.getItem(HOME_VIDEO_NAME_KEY).then((name) => {
+      if (name) setHomeVideoName(name);
+    }).catch(() => {});
+  }, []);
+
+  const chooseHomeVideo = async () => {
+    if (isChoosingVideo) return;
+    setIsChoosingVideo(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'video/mp4',
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+
+      const selected = result.assets[0];
+      if (!selected.name.toLowerCase().endsWith('.mp4')) {
+        setStatusMessage('Please select an MP4 video.');
+        return;
+      }
+
+      const sourceFile = new File(selected.uri);
+      const previousUri = await AsyncStorage.getItem(HOME_VIDEO_URI_KEY);
+      const savedVideo = new File(Paths.document, `home-screen-video-${Date.now()}.mp4`);
+      await sourceFile.copy(savedVideo);
+      await AsyncStorage.multiSet([
+        [HOME_VIDEO_URI_KEY, savedVideo.uri],
+        [HOME_VIDEO_NAME_KEY, selected.name],
+      ]);
+      if (previousUri && previousUri !== savedVideo.uri) {
+        const previousVideo = new File(previousUri);
+        if (previousVideo.exists) previousVideo.delete();
+      }
+      setHomeVideoName(selected.name);
+      setStatusMessage('Home video updated. Return to Home to see it.');
+    } catch (error) {
+      setStatusMessage(error.message || 'Could not change the home video.');
+    } finally {
+      setIsChoosingVideo(false);
+    }
+  };
+
+  const resetHomeVideo = async () => {
+    try {
+      const previousUri = await AsyncStorage.getItem(HOME_VIDEO_URI_KEY);
+      await AsyncStorage.multiRemove([HOME_VIDEO_URI_KEY, HOME_VIDEO_NAME_KEY]);
+      if (previousUri) {
+        const previousVideo = new File(previousUri);
+        if (previousVideo.exists) previousVideo.delete();
+      }
+      setHomeVideoName('youtube-video.mp4');
+      setStatusMessage('Default home video restored.');
+    } catch (error) {
+      setStatusMessage(error.message || 'Could not restore the default home video.');
+    }
+  };
 
   const pickMusicFolder = async () => {
     try {
@@ -119,6 +183,34 @@ export default function SettingsScreen() {
             </Pressable>
             <Text style={styles.helperText}>{tracks.length} playable {tracks.length === 1 ? 'track' : 'tracks'} in your library.</Text>
           </View>
+
+          {Platform.OS !== 'web' ? (
+            <>
+              <Text style={styles.sectionTitle}>Home screen video</Text>
+              <View style={styles.card}>
+                <Text style={styles.fieldLabel}>Current video</Text>
+                <Text style={styles.helperText} numberOfLines={1}>{homeVideoName}</Text>
+                <Text style={styles.helperText}>Choose an MP4 video from your device. It will play on Home when no song is playing.</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isChoosingVideo}
+                  onPress={chooseHomeVideo}
+                  style={({ pressed }) => [styles.secondaryButton, styles.folderButton, pressed && styles.pressed]}
+                >
+                  <Ionicons name="videocam-outline" size={18} color={COLORS.green} />
+                  <Text style={styles.secondaryButtonText}>{isChoosingVideo ? 'Opening videos...' : 'Choose home video'}</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={resetHomeVideo}
+                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+                >
+                  <Ionicons name="refresh-outline" size={18} color={COLORS.green} />
+                  <Text style={styles.secondaryButtonText}>Restore default video</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : null}
 
           {statusMessage ? (
             <View accessibilityRole="text" style={styles.statusBox}>

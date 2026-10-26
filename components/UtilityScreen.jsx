@@ -174,7 +174,7 @@ function UtilityContent({ page, initialQuery, initialCategory }) {
             {query.trim() || searchCategory !== 'All' ? (
               <ItemList items={items} bottomInset={insets.bottom} onSelect={(item) => {
                 if (item.track) { playTrack(item.track); router.push('/Player'); }
-                else router.push({ pathname: '/Albums', params: { albumId: item.id } });
+                else router.push({ pathname: '/Albums', params: { albumId: item.album?.routeId ?? item.id } });
               }} />
             ) : (
               <View style={styles.browseCards}>
@@ -220,7 +220,7 @@ function UtilityContent({ page, initialQuery, initialCategory }) {
               </Text>
               <ItemList items={items} bottomInset={insets.bottom} compact emptyMessage={libraryCategory === 'Favorites' ? 'No favorites yet. Tap a heart on a song or album to save it here.' : 'No music here yet. Add songs in Settings.'} onSelect={(item) => {
                 if (item.track) { playTrack(item.track); router.push('/Player'); }
-                else if (item.album) router.push({ pathname: '/Albums', params: { albumId: item.id } });
+                else if (item.album) router.push({ pathname: '/Albums', params: { albumId: item.album.routeId ?? item.id } });
                 else router.push('/Albums');
               }} />
             </View>

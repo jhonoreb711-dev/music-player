@@ -204,7 +204,7 @@ async function toTrack(file) {
     id: `local-${file.name.toLocaleLowerCase()}`,
     title,
     artist: includeFeaturedArtists(artist, title),
-    album: tags.album || 'Singles',
+    album: tags.album || null,
     albumArtist: tags.albumArtist || artist,
     durationSeconds: tags.durationSeconds ?? null,
     kind: 'Music',

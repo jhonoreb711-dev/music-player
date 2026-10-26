@@ -62,6 +62,7 @@ function CollectionContent({ initialAlbumId }) {
 
   const libraryAlbums = useMemo(() => buildAlbums(tracks).map((album) => ({
     id: album.id,
+    routeId: album.routeId,
     title: album.title,
     artist: album.artist,
     artwork: album.artwork,
@@ -83,7 +84,7 @@ function CollectionContent({ initialAlbumId }) {
     return combined.filter((album) => !hiddenSet.has(album.id));
   }, [userAlbumsList, libraryAlbums, hiddenAlbumIds]);
 
-  const selectedAlbum = allAlbums.find((album) => album.id === selectedAlbumId);
+  const selectedAlbum = allAlbums.find((album) => album.id === selectedAlbumId || album.routeId === selectedAlbumId);
   const selectedAlbumTracks = useMemo(() => {
     if (!selectedAlbum) return [];
     if (Array.isArray(selectedAlbum.tracks) && selectedAlbum.tracks.length > 0) {

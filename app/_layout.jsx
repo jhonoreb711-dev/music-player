@@ -31,6 +31,7 @@ export default function Layout() {
     }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="Music" options={{ headerShown: false }} />
+      <Stack.Screen name="Artist" options={{ headerShown: false }} />
       <Stack.Screen name="Player" options={{ headerShown: false, animation: 'fade' }} />
       <Stack.Screen name="RecentlyPlayed" options={{ headerShown: false }} />
       <Stack.Screen name="Albums" options={{ headerShown: false }} />

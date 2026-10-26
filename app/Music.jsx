@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
   Pressable,
   Platform,
   ScrollView,
@@ -8,50 +9,240 @@ import {
   Text,
   View,
 } from 'react-native';
-import { ImageBackground } from 'expo-image';
+import { Image, ImageBackground } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useIsFocused } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import christmasBackground from '../assets/christmas_bg4.png';
+import benjieHat from '../assets/Benjie_hat.png';
 import homeVideo from '../assets/youtube-video.mp4';
+import { HOME_VIDEO_URI_KEY } from '../components/homeVideoStorage';
 import { usePlayback } from '../components/PlaybackContext';
 import SongArtwork from '../components/SongArtwork';
+import { buildAlbums } from '../components/albumLibrary';
+import { getUserAlbums } from '../components/userAlbums';
+import { buildArtistCollections } from '../components/artistLibrary';
+import { getArtistCovers } from '../components/artistArtwork';
 
-const categories = ['All', 'Music'];
+const categories = ['All', 'My Albums'];
 const ALPHABET_LETTERS = ['All', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), '#'];
 
 function HomeVideo({ playing }) {
+  const isFocused = useIsFocused();
+  const playingRef = useRef(playing);
+  const sourceRef = useRef(homeVideo);
+  const [controlsVisible, setControlsVisible] = useState(false);
+  const [controlsOpacity] = useState(() => new Animated.Value(0));
+  const controlsTimer = useRef(null);
+  const [videoTime, setVideoTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [progressWidth, setProgressWidth] = useState(0);
   const player = useVideoPlayer(homeVideo, (videoPlayer) => {
     videoPlayer.loop = true;
-    videoPlayer.muted = true;
   });
 
+  useEffect(() => {
+    const timeSubscription = player.addListener('timeUpdate', ({ currentTime }) => {
+      setVideoTime(currentTime);
+    });
+    const sourceSubscription = player.addListener('sourceLoad', ({ duration }) => {
+      setVideoDuration(Number.isFinite(duration) ? duration : 0);
+      setVideoTime(player.currentTime || 0);
+    });
+
+    return () => {
+      timeSubscription.remove();
+      sourceSubscription.remove();
+    };
+  }, [player]);
+
+  useEffect(() => {
+    Reflect.set(player, 'timeUpdateEventInterval', controlsVisible ? 0.25 : 0);
+  }, [controlsVisible, player]);
+
+  useEffect(() => () => clearTimeout(controlsTimer.current), []);
+
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
+
   useFocusEffect(useCallback(() => {
-    if (playing) {
+    let active = true;
+    const restoreVideo = async () => {
+      let source = homeVideo;
+      try {
+        source = await AsyncStorage.getItem(HOME_VIDEO_URI_KEY) || homeVideo;
+      } catch {}
+
+      if (sourceRef.current !== source) {
+        try {
+          await player.replaceAsync(source);
+          sourceRef.current = source;
+        } catch {
+          try {
+            await player.replaceAsync(homeVideo);
+            sourceRef.current = homeVideo;
+          } catch {}
+        }
+      }
+
+      if (!active) return;
+      if (playingRef.current) player.pause();
+      else player.play();
+    };
+    restoreVideo();
+
+    return () => {
+      active = false;
       player.pause();
-      return undefined;
-    }
-    player.play();
-    return () => player.pause();
-  }, [playing, player]));
+    };
+  }, [player]));
+
+  useEffect(() => {
+    if (!isFocused || playing) player.pause();
+    else player.play();
+  }, [isFocused, playing, player]);
+
+  const seekVideo = (event) => {
+    event.stopPropagation();
+    if (!videoDuration || !progressWidth) return;
+    const nextTime = Math.max(0, Math.min(event.nativeEvent.locationX / progressWidth, 1)) * videoDuration;
+    Reflect.set(player, 'currentTime', nextTime);
+    setVideoTime(nextTime);
+  };
+
+  const showControls = () => {
+    setVideoTime(player.currentTime || 0);
+    setVideoDuration(Number.isFinite(player.duration) ? player.duration : 0);
+    controlsOpacity.stopAnimation();
+    controlsOpacity.setValue(1);
+    setControlsVisible(true);
+    clearTimeout(controlsTimer.current);
+    controlsTimer.current = setTimeout(() => {
+      Animated.timing(controlsOpacity, { toValue: 0, duration: 500, useNativeDriver: true }).start(({ finished }) => {
+        if (finished) setControlsVisible(false);
+      });
+    }, 3000);
+  };
+
+  const progress = videoDuration > 0 ? Math.max(0, Math.min(videoTime / videoDuration, 1)) : 0;
 
   return (
-    <VideoView
-      player={player}
-      style={styles.homeVideo}
-      contentFit="cover"
-      nativeControls={false}
-    />
+    <View style={styles.videoWrap}>
+      <View style={styles.homeVideo}>
+        <VideoView
+          player={player}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+          contentFit="cover"
+          nativeControls={false}
+          surfaceType={Platform.OS === 'android' ? 'textureView' : undefined}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Show video duration and progress"
+          onPress={showControls}
+          style={[styles.videoTapLayer, { zIndex: controlsVisible ? 1 : 20, elevation: controlsVisible ? 0 : 8 }]}
+        />
+        {controlsVisible ? (
+          <Animated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, styles.videoControlsOverlay, { opacity: controlsOpacity }]}>
+            <View pointerEvents="none" style={styles.videoVignette}>
+              <View style={styles.vignetteTop} />
+              <View style={styles.vignetteLeft} />
+              <View style={styles.vignetteRight} />
+            </View>
+            <View pointerEvents="box-none" style={styles.videoControlBar}>
+              <Text style={styles.videoTime}>{formatVideoTime(videoTime)}</Text>
+              <Pressable
+                accessibilityRole="adjustable"
+                accessibilityLabel="Video progress"
+                accessibilityValue={{ min: 0, max: videoDuration, now: videoTime }}
+                onPress={seekVideo}
+                onLayout={(event) => setProgressWidth(event.nativeEvent.layout.width)}
+                style={styles.videoProgressHitArea}
+              >
+                <View style={styles.videoProgressTrack}>
+                  <View style={[styles.videoProgressFill, { width: `${progress * 100}%` }]} />
+                </View>
+              </Pressable>
+              <Text style={styles.videoTime}>{formatVideoTime(videoDuration)}</Text>
+            </View>
+          </Animated.View>
+        ) : null}
+      </View>
+      <Image source={benjieHat} contentFit="contain" pointerEvents="none" style={styles.videoBenjie} />
+    </View>
   );
+}
+
+function formatVideoTime(time) {
+  const totalSeconds = Math.max(0, Math.floor(Number.isFinite(time) ? time : 0));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
 export default function Music() {
   const insets = useSafeAreaInsets();
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedLetter, setSelectedLetter] = useState('All');
-  const { currentTrack, playTrack, playQueue, recentlyPlayed, tracks, playing } = usePlayback();
+  const [userAlbums, setUserAlbums] = useState([]);
+  const [hiddenAlbumIds, setHiddenAlbumIds] = useState([]);
+  const [artistCovers, setArtistCovers] = useState({});
+  const { currentTrack, libraryId, playTrack, playQueue, recentlyPlayed, tracks, playing } = usePlayback();
+
+  useEffect(() => {
+    let active = true;
+    if (!libraryId) return () => { active = false; };
+
+    Promise.all([
+      getUserAlbums(libraryId),
+      AsyncStorage.getItem(`music-player.hidden-albums:${libraryId}`),
+    ]).then(([albums, hiddenRaw]) => {
+      if (!active) return;
+      setUserAlbums(albums);
+      if (hiddenRaw) {
+        try {
+          setHiddenAlbumIds(JSON.parse(hiddenRaw));
+        } catch {
+          setHiddenAlbumIds([]);
+        }
+      } else {
+        setHiddenAlbumIds([]);
+      }
+    }).catch(() => {});
+
+    return () => { active = false; };
+  }, [libraryId]);
+
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    getArtistCovers(libraryId).then((covers) => {
+      if (active) setArtistCovers(covers);
+    });
+    return () => { active = false; };
+  }, [libraryId]));
+
+  const homeAlbums = useMemo(() => {
+    const userAlbumItems = userAlbums.map((album) => ({ ...album, isUserAlbum: true }));
+    const libraryAlbumItems = buildAlbums(tracks).map((album) => ({
+      ...album,
+      routeId: album.routeId,
+      trackIds: album.tracks.map((track) => track.id),
+      artworkUri: null,
+      isUserAlbum: false,
+    }));
+    const hiddenIds = new Set(hiddenAlbumIds);
+    return [...userAlbumItems, ...libraryAlbumItems].filter((album) => !hiddenIds.has(album.id));
+  }, [hiddenAlbumIds, tracks, userAlbums]);
+  const artistCollections = useMemo(() => buildArtistCollections(tracks), [tracks]);
+
   const recentItems = useMemo(() => recentlyPlayed.map((entry) => {
     if (entry.type === 'track') {
       const track = tracks.find((item) => item.id === entry.id);
@@ -108,7 +299,13 @@ export default function Music() {
     >
       <StatusBar barStyle="dark-content" />
       <View style={styles.screen}>
-        <View style={[styles.content, { paddingTop: insets.top + 42 }]}>
+        <View pointerEvents="none" style={[styles.christmasHeaderSpace, { height: Math.max(insets.top + 44, 92) }]} />
+        <ScrollView
+          style={styles.content}
+          contentContainerStyle={[styles.contentContainer, { paddingTop: 60, paddingBottom: currentTrack ? 76 : 20 }]}
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
+        >
           {Platform.OS !== 'web' ? <HomeVideo playing={playing} /> : null}
           <View style={styles.header}>
             <View>
@@ -127,7 +324,7 @@ export default function Music() {
                   accessibilityState={{ selected: isSelected }}
                   onPress={() => {
                     setSelectedCategory(category);
-                    if (category === 'Music') router.push('/Albums');
+                    if (category === 'My Albums') router.push('/Albums');
                   }}
                   style={[styles.categoryPill, isSelected && styles.categoryPillSelected]}
                 >
@@ -176,6 +373,73 @@ export default function Music() {
               <Text style={styles.recentEmptyText}>Songs and albums you play will show up here.</Text>
             </View>
           )}
+
+          {artistCollections.length ? (
+            <>
+              <View style={[styles.sectionHeading, styles.artistCollectionsHeading]}>
+                <Text style={styles.sectionTitle}>Artists</Text>
+              </View>
+              <ScrollView
+                horizontal
+                style={styles.artistCollectionsScroll}
+                contentContainerStyle={styles.artistCollectionsRow}
+                showsHorizontalScrollIndicator={false}
+              >
+                {artistCollections.map((collection) => (
+                  <Pressable
+                    key={collection.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Browse ${collection.artist}, ${collection.tracks.length} songs`}
+                    onPress={() => router.push({ pathname: '/Artist', params: { artist: collection.artist } })}
+                    style={styles.artistCollectionCard}
+                  >
+                    <SongArtwork source={artistCovers[collection.id] ? { uri: artistCovers[collection.id] } : collection.artwork} style={styles.artistCollectionArt} iconSize={35} />
+                    <Text numberOfLines={1} style={styles.artistCollectionName}>{collection.artist}</Text>
+                    <Text style={styles.artistCollectionCount}>{collection.tracks.length} {collection.tracks.length === 1 ? 'song' : 'songs'}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </>
+          ) : null}
+
+          {homeAlbums.length ? (
+            <>
+              <View style={[styles.sectionHeading, styles.homeAlbumsHeading]}>
+                <Text style={styles.sectionTitle}>Your Albums</Text>
+                <Pressable accessibilityRole="button" onPress={() => router.push('/Albums')} hitSlop={8}>
+                  <Text style={styles.seeAll}>See all</Text>
+                </Pressable>
+              </View>
+              <ScrollView
+                horizontal
+                style={styles.homeAlbumsScroll}
+                contentContainerStyle={styles.homeAlbumsRow}
+                showsHorizontalScrollIndicator={false}
+              >
+                {homeAlbums.map((album) => {
+                  const albumTracks = album.tracks ?? album.trackIds?.map((id) => tracks.find((track) => track.id === id)).filter(Boolean) ?? [];
+                  const artwork = album.artworkUri ? { uri: album.artworkUri } : album.artwork ?? null;
+                  const subtitle = album.isUserAlbum
+                    ? `Playlist · ${albumTracks.length} song${albumTracks.length === 1 ? '' : 's'}`
+                    : `${album.artist || 'Album'} · ${albumTracks.length} song${albumTracks.length === 1 ? '' : 's'}`;
+
+                  return (
+                    <Pressable
+                      key={album.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${album.title}, ${subtitle}`}
+                      onPress={() => router.push({ pathname: '/Albums', params: { albumId: album.routeId ?? album.id } })}
+                      style={styles.homeAlbumCard}
+                    >
+                      <SongArtwork source={artwork} style={styles.homeAlbumArt} iconSize={42} />
+                      <Text numberOfLines={1} style={styles.homeAlbumTitle}>{album.title}</Text>
+                      <Text numberOfLines={1} style={styles.homeAlbumSubtitle}>{subtitle}</Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </>
+          ) : null}
 
           <View style={[styles.sectionHeading, styles.songsHeading]}>
             <View style={styles.headingTitleRow}>
@@ -232,12 +496,7 @@ export default function Music() {
             </View>
           ) : null}
 
-          <ScrollView
-            style={styles.songScroll}
-            contentContainerStyle={[styles.songList, { paddingBottom: currentTrack ? 64 : 12 }]}
-            showsVerticalScrollIndicator={false}
-            nestedScrollEnabled
-          >
+          <View style={styles.songList}>
             {displayedSections.map((section) => (
               <View key={section.letter} style={styles.sectionBlock}>
                 <View style={styles.letterHeader}>
@@ -292,8 +551,8 @@ export default function Music() {
                 </Pressable>
               </View>
             ) : null}
-          </ScrollView>
-        </View>
+          </View>
+        </ScrollView>
 
         <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
           {[
@@ -344,15 +603,35 @@ const COLORS = {
 const styles = StyleSheet.create({
   background: { flex: 1, width: '100%' },
   screen: { flex: 1, backgroundColor: 'transparent' },
-  content: { flex: 1, minHeight: 0, paddingHorizontal: 20 },
+  christmasHeaderSpace: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 1 },
+  content: { flex: 1, minHeight: 0 },
+  contentContainer: { paddingHorizontal: 20 },
+    videoWrap: { position: 'relative', height: 288, marginBottom: 36, overflow: 'visible', transform: [{ translateY: 20 }] },
     homeVideo: {
+      position: 'absolute',
+      top: 120,
+      left: 0,
+      right: 0,
       width: '100%',
       height: 168,
       borderRadius: 16,
+      borderWidth: 3,
+      borderColor: 'white',
       overflow: 'hidden',
-      marginBottom: 12,
       backgroundColor: '#164d38',
     },
+  videoTapLayer: { ...StyleSheet.absoluteFillObject, backgroundColor: 'transparent' },
+  videoBenjie: { position: 'absolute', zIndex: 3, elevation: 9, top: -90, alignSelf: 'center', width: 274, height: 270 },
+  videoControlsOverlay: { zIndex: 30, elevation: 10 },
+  videoVignette: { ...StyleSheet.absoluteFillObject, overflow: 'hidden', borderRadius: 13 },
+  vignetteTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 32, backgroundColor: 'rgba(0,0,0,0.28)' },
+  vignetteLeft: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 26, backgroundColor: 'rgba(0,0,0,0.22)' },
+  vignetteRight: { position: 'absolute', top: 0, bottom: 0, right: 0, width: 26, backgroundColor: 'rgba(0,0,0,0.22)' },
+  videoControlBar: { position: 'absolute', left: 0, right: 0, bottom: 0, minHeight: 38, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingBottom: 2, backgroundColor: 'rgba(0,0,0,0.72)' },
+  videoTime: { color: '#fff', fontFamily: 'NunitoBold', fontSize: 11, fontVariant: ['tabular-nums'] },
+  videoProgressHitArea: { flex: 1, height: 24, justifyContent: 'center' },
+  videoProgressTrack: { height: 4, overflow: 'hidden', borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.5)' },
+  videoProgressFill: { height: '100%', borderRadius: 3, backgroundColor: '#fff' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -381,6 +660,20 @@ const styles = StyleSheet.create({
     marginBottom: 11,
   },
   recentHeading: { marginBottom: 6 },
+  homeAlbumsHeading: { marginTop: 14, marginBottom: 9 },
+  artistCollectionsHeading: { marginTop: 14, marginBottom: 9 },
+  artistCollectionsScroll: { flexGrow: 0, flexShrink: 0 },
+  artistCollectionsRow: { flexDirection: 'row', gap: 13, paddingBottom: 2 },
+  artistCollectionCard: { width: 136 },
+  artistCollectionArt: { width: 136, height: 136, borderRadius: 14, backgroundColor: '#d9c7a4' },
+  artistCollectionName: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 13, marginTop: 6 },
+  artistCollectionCount: { color: '#5e5548', fontFamily: 'NunitoRegular', fontSize: 11, marginTop: 1 },
+  homeAlbumsScroll: { flexGrow: 0, flexShrink: 0 },
+  homeAlbumsRow: { flexDirection: 'row', gap: 14, paddingBottom: 2 },
+  homeAlbumCard: { width: 166 },
+  homeAlbumArt: { width: 166, height: 166, borderRadius: 12, backgroundColor: '#d9c7a4' },
+  homeAlbumTitle: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 14, marginTop: 7 },
+  homeAlbumSubtitle: { color: '#5e5548', fontFamily: 'NunitoRegular', fontSize: 12, marginTop: 1 },
   sectionTitle: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 17 },
   seeAll: { color: COLORS.green, fontFamily: 'NunitoBold', fontSize: 12 },
   recentScroll: { height: 132, flexGrow: 0, flexShrink: 0 },
@@ -449,7 +742,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.green,
   },
   clearFilterText: { color: COLORS.cream, fontFamily: 'NunitoBold', fontSize: 11 },
-  songScroll: { flex: 1, minHeight: 0 },
   songList: { gap: 8 },
   emptySongs: { alignItems: 'center', paddingHorizontal: 18, paddingVertical: 24, borderRadius: 14, backgroundColor: 'rgba(255,248,233,0.86)' },
   emptySongsTitle: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 14, marginTop: 8, textAlign: 'center' },
