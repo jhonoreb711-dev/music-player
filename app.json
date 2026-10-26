@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "music-player",
+    "slug": "music-player",
+    "scheme": "musicplayer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/icon.png",
+        "backgroundImage": "./assets/icon.png",
+        "monochromeImage": "./assets/icon.png"
+      },
+      "package": "com.benchtadeo30steam.musicplayer",
+      "versionCode": 2
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "node_modules/@expo-google-fonts/inter/900Black/Inter_900Black.ttf"
+          ]
+        }
+      ],
+      "expo-image",
+      [
+        "expo-audio",
+        {
+          "enableBackgroundPlayback": true
+        }
+      ],
+      "expo-router",
+      "expo-video"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "d5417430-d115-4abc-b2fa-36c41d8e1a5a"
+      }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/d5417430-d115-4abc-b2fa-36c41d8e1a5a"
+    }
+  }
+}
