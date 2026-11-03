@@ -38,6 +38,7 @@ export default function Layout() {
       <Stack.Screen name="Search" options={{ headerShown: false }} />
       <Stack.Screen name="Library" options={{ headerShown: false }} />
       <Stack.Screen name="Settings" options={{ headerShown: false }} />
+      <Stack.Screen name="podcast" options={{ headerShown: false }} />
     </Stack>
     <MiniPlayerOverlay />
     </>

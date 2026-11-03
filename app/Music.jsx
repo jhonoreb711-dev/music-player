@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  Easing,
   Pressable,
   Platform,
   ScrollView,
@@ -8,15 +9,16 @@ import {
   StyleSheet,
   Text,
   View,
+
 } from 'react-native';
 import { Image, ImageBackground } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect, useIsFocused } from 'expo-router';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import christmasBackground from '../assets/christmas_bg4.png';
+import christmasBackground from '../assets/christmas_twinkle_loop.gif';
 import benjieHat from '../assets/Benjie_hat.png';
 import homeVideo from '../assets/youtube-video.mp4';
 import { HOME_VIDEO_URI_KEY } from '../components/homeVideoStorage';
@@ -26,27 +28,51 @@ import { buildAlbums } from '../components/albumLibrary';
 import { getUserAlbums } from '../components/userAlbums';
 import { buildArtistCollections } from '../components/artistLibrary';
 import { getArtistCovers } from '../components/artistArtwork';
+import FadeInUp from '../components/FadeInUp';
+import PressableScale from '../components/PressableScale';
 
-const categories = ['All', 'My Albums'];
+const categories = [
+  { label: 'All', icon: 'grid' },
+  { label: 'My Albums', icon: 'albums' },
+  { label: 'Podcast', icon: 'videocam' },
+];
 const ALPHABET_LETTERS = ['All', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), '#'];
+let savedHomeVideoTime = 0;
+let savedHomeVideoSource = homeVideo;
 
-function HomeVideo({ playing }) {
+function HomeVideo({ player, playing, currentTrack }) {
+
+  const [float] = useState(() => new Animated.Value(0));
+
+useEffect(() => {
+  const loop = Animated.loop(
+    Animated.sequence([
+      Animated.timing(float, { toValue: 1, duration: 1800, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      Animated.timing(float, { toValue: 0, duration: 1800, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+    ])
+  );
+  loop.start();
+  return () => loop.stop();
+}, [float]);
+
+const benjieY = float.interpolate({ inputRange: [0, 1], outputRange: [0, -8] });
+const benjieTilt = float.interpolate({ inputRange: [0, 1], outputRange: ['-1.5deg', '0.2deg'] });
+
   const isFocused = useIsFocused();
   const playingRef = useRef(playing);
-  const sourceRef = useRef(homeVideo);
+  const sourceRef = useRef(savedHomeVideoSource);
   const [controlsVisible, setControlsVisible] = useState(false);
   const [controlsOpacity] = useState(() => new Animated.Value(0));
   const controlsTimer = useRef(null);
   const [videoTime, setVideoTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
   const [progressWidth, setProgressWidth] = useState(0);
-  const player = useVideoPlayer(homeVideo, (videoPlayer) => {
-    videoPlayer.loop = true;
-  });
 
   useEffect(() => {
     const timeSubscription = player.addListener('timeUpdate', ({ currentTime }) => {
       setVideoTime(currentTime);
+      savedHomeVideoTime = currentTime;
+      savedHomeVideoSource = sourceRef.current;
     });
     const sourceSubscription = player.addListener('sourceLoad', ({ duration }) => {
       setVideoDuration(Number.isFinite(duration) ? duration : 0);
@@ -60,8 +86,8 @@ function HomeVideo({ playing }) {
   }, [player]);
 
   useEffect(() => {
-    Reflect.set(player, 'timeUpdateEventInterval', controlsVisible ? 0.25 : 0);
-  }, [controlsVisible, player]);
+    Reflect.set(player, 'timeUpdateEventInterval', 0.5);
+  }, [player]);
 
   useEffect(() => () => clearTimeout(controlsTimer.current), []);
 
@@ -78,11 +104,20 @@ function HomeVideo({ playing }) {
       } catch {}
 
       if (sourceRef.current !== source) {
+        if (savedHomeVideoSource !== source) {
+          savedHomeVideoTime = 0;
+          savedHomeVideoSource = source;
+        }
         try {
           await player.replaceAsync(source);
           sourceRef.current = source;
         } catch {
           try {
+            source = homeVideo;
+            if (savedHomeVideoSource !== source) {
+              savedHomeVideoTime = 0;
+              savedHomeVideoSource = source;
+            }
             await player.replaceAsync(homeVideo);
             sourceRef.current = homeVideo;
           } catch {}
@@ -90,6 +125,14 @@ function HomeVideo({ playing }) {
       }
 
       if (!active) return;
+      if (savedHomeVideoSource === source && savedHomeVideoTime > 0) {
+        const maxTime = Number.isFinite(player.duration) && player.duration > 0
+          ? Math.max(0, player.duration - 0.1)
+          : savedHomeVideoTime;
+        const resumeAt = Math.min(savedHomeVideoTime, maxTime);
+        Reflect.set(player, 'currentTime', resumeAt);
+        setVideoTime(resumeAt);
+      }
       if (playingRef.current) player.pause();
       else player.play();
     };
@@ -97,12 +140,18 @@ function HomeVideo({ playing }) {
 
     return () => {
       active = false;
+      savedHomeVideoTime = player.currentTime || savedHomeVideoTime;
+      savedHomeVideoSource = sourceRef.current;
       player.pause();
     };
   }, [player]));
 
   useEffect(() => {
-    if (!isFocused || playing) player.pause();
+    if (!isFocused || playing) {
+      savedHomeVideoTime = player.currentTime || savedHomeVideoTime;
+      savedHomeVideoSource = sourceRef.current;
+      player.pause();
+    }
     else player.play();
   }, [isFocused, playing, player]);
 
@@ -125,14 +174,18 @@ function HomeVideo({ playing }) {
       Animated.timing(controlsOpacity, { toValue: 0, duration: 500, useNativeDriver: true }).start(({ finished }) => {
         if (finished) setControlsVisible(false);
       });
-    }, 3000);
+    }, 4000);
   };
 
   const progress = videoDuration > 0 ? Math.max(0, Math.min(videoTime / videoDuration, 1)) : 0;
 
   return (
     <View style={styles.videoWrap}>
-      <View style={styles.homeVideo}>
+      <View
+        collapsable={false}
+        onTouchStart={showControls}
+        style={styles.homeVideo}
+      >
         <VideoView
           player={player}
           style={StyleSheet.absoluteFill}
@@ -141,21 +194,17 @@ function HomeVideo({ playing }) {
           nativeControls={false}
           surfaceType={Platform.OS === 'android' ? 'textureView' : undefined}
         />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Show video duration and progress"
-          onPress={showControls}
-          style={[styles.videoTapLayer, { zIndex: controlsVisible ? 1 : 20, elevation: controlsVisible ? 0 : 8 }]}
-        />
         {controlsVisible ? (
           <Animated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, styles.videoControlsOverlay, { opacity: controlsOpacity }]}>
-            <View pointerEvents="none" style={styles.videoVignette}>
-              <View style={styles.vignetteTop} />
-              <View style={styles.vignetteLeft} />
-              <View style={styles.vignetteRight} />
-            </View>
             <View pointerEvents="box-none" style={styles.videoControlBar}>
-              <Text style={styles.videoTime}>{formatVideoTime(videoTime)}</Text>
+              <View style={styles.videoInfoRow}>
+                <Text numberOfLines={1} style={styles.videoTitle}>
+                  {currentTrack?.title || 'Mistletoe by Justin Bieber'}
+                </Text>
+                <Text style={styles.videoTime}>
+                  {formatVideoTime(videoTime)} / {formatVideoTime(videoDuration)}
+                </Text>
+              </View>
               <Pressable
                 accessibilityRole="adjustable"
                 accessibilityLabel="Video progress"
@@ -168,12 +217,22 @@ function HomeVideo({ playing }) {
                   <View style={[styles.videoProgressFill, { width: `${progress * 100}%` }]} />
                 </View>
               </Pressable>
-              <Text style={styles.videoTime}>{formatVideoTime(videoDuration)}</Text>
             </View>
           </Animated.View>
         ) : null}
       </View>
-      <Image source={benjieHat} contentFit="contain" pointerEvents="none" style={styles.videoBenjie} />
+      <View pointerEvents="none" style={styles.snowVideoBorder}>
+        <Text style={[styles.snowflakeAccent, styles.snowflakeTopLeft]}>❄</Text>
+        <Text style={[styles.snowflakeAccent, styles.snowflakeTopRight]}>❄</Text>
+        <Text style={[styles.snowflakeAccent, styles.snowflakeBottomLeft]}>❄</Text>
+        <Text style={[styles.snowflakeAccent, styles.snowflakeBottomRight]}>❄</Text>
+      </View>
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.videoBenjie, { transform: [{ translateY: benjieY }, { rotate: benjieTilt }] }]}
+      >
+        <Image source={benjieHat} contentFit="contain" style={{ width: '100%', height: '100%' }} />
+      </Animated.View>
     </View>
   );
 }
@@ -195,7 +254,7 @@ export default function Music() {
   const [userAlbums, setUserAlbums] = useState([]);
   const [hiddenAlbumIds, setHiddenAlbumIds] = useState([]);
   const [artistCovers, setArtistCovers] = useState({});
-  const { currentTrack, libraryId, playTrack, playQueue, recentlyPlayed, tracks, playing } = usePlayback();
+  const { currentTrack, homeVideoPlayer, libraryId, playTrack, playQueue, recentlyPlayed, tracks, playing } = usePlayback();
 
   useEffect(() => {
     let active = true;
@@ -295,89 +354,119 @@ export default function Music() {
     <ImageBackground
       source={christmasBackground}
       contentFit="cover"
+      autoplay
       style={styles.background}
     >
-      <StatusBar barStyle="dark-content" />
+      <StatusBar barStyle="light-content" />
       <View style={styles.screen}>
         <View pointerEvents="none" style={[styles.christmasHeaderSpace, { height: Math.max(insets.top + 44, 92) }]} />
         <ScrollView
           style={styles.content}
-          contentContainerStyle={[styles.contentContainer, { paddingTop: 60, paddingBottom: currentTrack ? 76 : 20 }]}
+          contentContainerStyle={[styles.contentContainer, { paddingTop: 70, paddingBottom: currentTrack ? 76 : 20 }]}
           showsVerticalScrollIndicator={false}
           nestedScrollEnabled
         >
-          {Platform.OS !== 'web' ? <HomeVideo playing={playing} /> : null}
-          <View style={styles.header}>
-            <View>
-              <Text numberOfLines={1} style={styles.name}>What sounds good today?</Text>
-              <Text style={styles.greeting}>Pick a song for the moment.</Text>
+          
+                   <FadeInUp distance={30} duration={600}>
+            {Platform.OS !== 'web' ? <HomeVideo key="home-video-player" player={homeVideoPlayer} playing={playing} currentTrack={currentTrack} /> : null}
+          </FadeInUp>
+
+          <FadeInUp delay={150}>
+            <View style={styles.header}>
+              <View>
+                <View style={styles.headingTitleRow}>
+                  <Text numberOfLines={1} style={styles.name}>What sounds good today?</Text>
+                  <Text style={styles.headingSnowflake}>❄</Text>
+                </View>
+                <Text style={styles.greeting}>Pick a song for the moment.</Text>
+              </View>
             </View>
-          </View>
+          </FadeInUp>
 
-          <View style={styles.categories}>
-            {categories.map((category) => {
-              const isSelected = category === selectedCategory;
-              return (
-                <Pressable
-                  key={category}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: isSelected }}
-                  onPress={() => {
-                    setSelectedCategory(category);
-                    if (category === 'My Albums') router.push('/Albums');
-                  }}
-                  style={[styles.categoryPill, isSelected && styles.categoryPillSelected]}
-                >
-                  <Text style={[styles.categoryText, isSelected && styles.categoryTextSelected]}>
-                    {category}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <View style={[styles.sectionHeading, styles.recentHeading]}>
-            <Text style={styles.sectionTitle}>Recently Played</Text>
-            <Pressable accessibilityRole="button" onPress={() => router.push('/RecentlyPlayed')} hitSlop={8}>
-              <Text style={styles.seeAll}>See all</Text>
-            </Pressable>
-          </View>
-
-          {recentItems.length ? (
-            <ScrollView horizontal style={styles.recentScroll} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentRow}>
-              {recentItems.map((item) => (
-                <Pressable key={item.key} accessibilityRole="button" accessibilityLabel={`Play recently played ${item.title}`} onPress={() => {
-                  if (item.track) {
-                    playTrack(item.track);
-                    router.push('/Player');
-                    return;
-                  }
-                  const trackIds = item.album.trackIds ?? item.album.tracks?.map((t) => t.id) ?? [];
-                  const albumTracks = trackIds.map((id) => tracks.find((track) => track.id === id)).filter((track) => track?.source);
-                  if (albumTracks.length) {
-                    playQueue(albumTracks, albumTracks[0], { type: 'album', id: item.album.id, title: item.album.title, artworkUri: item.album.artworkUri, trackIds });
-                    router.push('/Player');
-                  } else {
-                    router.push({ pathname: '/Albums', params: { albumId: item.album.id } });
-                  }
-                }} style={styles.albumCard}>
-                  <SongArtwork source={item.image} style={styles.albumArt} />
-                  <Text numberOfLines={1} style={styles.albumTitle}>{item.title}</Text>
-                  <Text numberOfLines={1} style={styles.albumSubtitle}>{item.subtitle}</Text>
-                </Pressable>
-              ))}
+          <FadeInUp delay={250}>
+            <ScrollView
+              horizontal
+              style={styles.categoryScroll}
+              contentContainerStyle={styles.categories}
+              showsHorizontalScrollIndicator={false}
+            >
+              {categories.map((category) => {
+                const isSelected = category.label === selectedCategory;
+                return (
+                  <PressableScale
+                    key={category.label}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isSelected }}
+                    onPress={() => {
+                      setSelectedCategory(category.label);
+                      if (category.label === 'My Albums') router.push('/Albums');
+                      if (category.label === 'Podcast') router.push('/podcast');
+                    }}
+                    style={[styles.categoryBook, category.label === 'All' && styles.categoryBookSongs, isSelected && styles.categoryBookSelected]}
+                  >
+                    <View style={[styles.categoryBookIconFrame, isSelected && styles.categoryBookIconFrameSelected]}>
+                      <Ionicons name={category.icon} size={29} color={COLORS.gold} />
+                    </View>
+                    <Text style={styles.categoryBookLabel}>
+                      {category.label}
+                    </Text>
+                    {isSelected ? <View style={styles.categoryBookRibbon} /> : null}
+                  </PressableScale>
+                );
+              })}
             </ScrollView>
-          ) : (
-            <View style={styles.recentEmpty}>
-              <Ionicons name="time-outline" size={22} color={COLORS.green} />
-              <Text style={styles.recentEmptyText}>Songs and albums you play will show up here.</Text>
+          </FadeInUp>
+
+          <FadeInUp delay={350}>
+            <View style={[styles.sectionHeading, styles.recentHeading]}>
+              <View style={styles.headingTitleRow}>
+                <Text style={styles.sectionTitle}>Recently Played</Text>
+                <Text style={styles.headingSnowflake}>❄</Text>
+              </View>
+              <Pressable accessibilityRole="button" onPress={() => router.push('/RecentlyPlayed')} hitSlop={8}>
+                <View style={styles.seeAllRow}><Text style={styles.seeAll}>See all</Text><Ionicons name="chevron-forward" size={14} color={COLORS.gold} /></View>
+              </Pressable>
             </View>
-          )}
+
+            {recentItems.length ? (
+              <ScrollView horizontal style={styles.recentScroll} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentRow}>
+                {recentItems.map((item) => (
+                  <PressableScale key={item.key} accessibilityRole="button" accessibilityLabel={`Play recently played ${item.title}`} onPress={() => {
+                    if (item.track) {
+                      playTrack(item.track);
+                      router.push('/Player');
+                      return;
+                    }
+                    const trackIds = item.album.trackIds ?? item.album.tracks?.map((t) => t.id) ?? [];
+                    const albumTracks = trackIds.map((id) => tracks.find((track) => track.id === id)).filter((track) => track?.source);
+                    if (albumTracks.length) {
+                      playQueue(albumTracks, albumTracks[0], { type: 'album', id: item.album.id, title: item.album.title, artworkUri: item.album.artworkUri, trackIds });
+                      router.push('/Player');
+                    } else {
+                      router.push({ pathname: '/Albums', params: { albumId: item.album.id } });
+                    }
+                  }} style={styles.albumCard}>
+                    <SongArtwork source={item.image} style={styles.albumArt} />
+                    <Text numberOfLines={1} style={styles.albumTitle}>{item.title}</Text>
+                    <Text numberOfLines={1} style={styles.albumSubtitle}>{item.subtitle}</Text>
+                  </PressableScale>
+                ))}
+              </ScrollView>
+            ) : (
+              <View style={styles.recentEmpty}>
+                <Ionicons name="time-outline" size={22} color={COLORS.green} />
+                <Text style={styles.recentEmptyText}>Songs and albums you play will show up here.</Text>
+              </View>
+            )}
+          </FadeInUp>
 
           {artistCollections.length ? (
             <>
               <View style={[styles.sectionHeading, styles.artistCollectionsHeading]}>
-                <Text style={styles.sectionTitle}>Artists</Text>
+                <View style={styles.headingTitleRow}>
+                  <Text style={styles.sectionTitle}>Artists</Text>
+                  <Text style={styles.headingSnowflake}>❄</Text>
+                </View>
               </View>
               <ScrollView
                 horizontal
@@ -405,9 +494,12 @@ export default function Music() {
           {homeAlbums.length ? (
             <>
               <View style={[styles.sectionHeading, styles.homeAlbumsHeading]}>
-                <Text style={styles.sectionTitle}>Your Albums</Text>
+                <View style={styles.headingTitleRow}>
+                  <Text style={styles.sectionTitle}>Your Albums</Text>
+                  <Text style={styles.headingSnowflake}>❄</Text>
+                </View>
                 <Pressable accessibilityRole="button" onPress={() => router.push('/Albums')} hitSlop={8}>
-                  <Text style={styles.seeAll}>See all</Text>
+                  <View style={styles.seeAllRow}><Text style={styles.seeAll}>See all</Text><Ionicons name="chevron-forward" size={14} color={COLORS.gold} /></View>
                 </Pressable>
               </View>
               <ScrollView
@@ -451,7 +543,7 @@ export default function Music() {
               ) : null}
             </View>
             <Pressable accessibilityRole="button" accessibilityLabel="Search your music" onPress={() => router.push('/Search')} hitSlop={8} style={styles.searchLink}>
-              <Ionicons name="search" size={14} color={COLORS.green} />
+              <Ionicons name="search" size={14} color={COLORS.gold} />
               <Text style={styles.seeAll}>Search</Text>
             </Pressable>
           </View>
@@ -578,11 +670,12 @@ export default function Music() {
                 <Ionicons
                   name={isSelected ? tab.icon : `${tab.icon}-outline`}
                   size={23}
-                  color={isSelected ? COLORS.red : COLORS.muted}
+                  color={isSelected ? COLORS.cream : COLORS.gold}
                 />
                 <Text style={[styles.tabLabel, isSelected && styles.tabLabelSelected]}>
                   {tab.label}
                 </Text>
+                <View style={[styles.tabIndicator, isSelected && styles.tabIndicatorActive]} />
               </Pressable>
             );
           })}
@@ -594,9 +687,10 @@ export default function Music() {
 
 const COLORS = {
   green: '#164d38',
-  red: '#a62224',
-  ink: '#29251e',
-  muted: '#837866',
+  red: '#930d1c',
+  gold: '#f4c86a',
+  ink: '#fff3d5',
+  muted: '#e2d2ad',
   cream: '#fff8e9',
 };
 
@@ -616,43 +710,58 @@ const styles = StyleSheet.create({
       height: 168,
       borderRadius: 16,
       borderWidth: 3,
-      borderColor: 'white',
+      borderColor: COLORS.gold,
       overflow: 'hidden',
       backgroundColor: '#164d38',
     },
-  videoTapLayer: { ...StyleSheet.absoluteFillObject, backgroundColor: 'transparent' },
-  videoBenjie: { position: 'absolute', zIndex: 3, elevation: 9, top: -90, alignSelf: 'center', width: 274, height: 270 },
-  videoControlsOverlay: { zIndex: 30, elevation: 10 },
-  videoVignette: { ...StyleSheet.absoluteFillObject, overflow: 'hidden', borderRadius: 13 },
-  vignetteTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 32, backgroundColor: 'rgba(0,0,0,0.28)' },
-  vignetteLeft: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 26, backgroundColor: 'rgba(0,0,0,0.22)' },
-  vignetteRight: { position: 'absolute', top: 0, bottom: 0, right: 0, width: 26, backgroundColor: 'rgba(0,0,0,0.22)' },
-  videoControlBar: { position: 'absolute', left: 0, right: 0, bottom: 0, minHeight: 38, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingBottom: 2, backgroundColor: 'rgba(0,0,0,0.72)' },
+  snowVideoBorder: { position: 'absolute', top: 120, left: 0, right: 0, height: 168, zIndex: 60, borderRadius: 16 },
+  snowflakeAccent: { position: 'absolute', color: COLORS.cream, fontSize: 13, lineHeight: 16, textShadowColor: COLORS.gold, textShadowRadius: 5 },
+  snowflakeTopLeft: { top: -7, left: 7 },
+  snowflakeTopRight: { top: -7, right: 7 },
+  snowflakeBottomLeft: { bottom: -7, left: 7 },
+  snowflakeBottomRight: { bottom: -7, right: 7 },
+  videoBenjie: { position: 'absolute', zIndex: 0, elevation: 9, top: -83, alignSelf: 'center', width: 274, height: 270 },
+  videoControlsOverlay: { zIndex: 40 },
+  videoControlBar: { position: 'absolute', left: 0, right: 0, bottom: 0, minHeight: 43, justifyContent: 'flex-end', paddingHorizontal: 11, paddingTop: 5, paddingBottom: 0, backgroundColor: 'transparent' },
+  videoInfoRow: { minHeight: 21, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, transform: [{ translateY: 3 }] },
+  videoTitle: { flex: 1, color: '#fff', fontFamily: 'NunitoBold', fontSize: 13},
   videoTime: { color: '#fff', fontFamily: 'NunitoBold', fontSize: 11, fontVariant: ['tabular-nums'] },
-  videoProgressHitArea: { flex: 1, height: 24, justifyContent: 'center' },
-  videoProgressTrack: { height: 4, overflow: 'hidden', borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.5)' },
-  videoProgressFill: { height: '100%', borderRadius: 3, backgroundColor: '#fff' },
+  videoProgressHitArea: { height: 17, justifyContent: 'flex-end', paddingBottom: 0, marginHorizontal: -11 },
+  videoProgressTrack: { height: 4, overflow: 'visible', borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.5)' },
+  videoProgressFill: { height: '100%', borderRadius: 2, backgroundColor: '#ff1744' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 12,
   },
-  greeting: { color: '#5b5141', fontFamily: 'NunitoSemiBold', fontSize: 14 },
-  name: { color: COLORS.green, fontFamily: 'NunitoExtraBold', fontSize: 23, lineHeight: 27 },
-  categories: { flexDirection: 'row', gap: 10, marginBottom: 14 },
-  categoryPill: {
-    minWidth: 76,
-    height: 36,
-    paddingHorizontal: 17,
-    borderRadius: 18,
+  name: { flexShrink: 1, color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 24, lineHeight: 30, textShadowColor: 'rgba(0,0,0,0.65)', textShadowRadius: 6 },
+  greeting: { color: COLORS.cream, fontFamily: 'NunitoSemiBold', fontSize: 15, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 5 },
+  categoryScroll: { height: 116, flexGrow: 0, flexShrink: 0, marginBottom: 14 },
+  categories: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 2, paddingVertical: 5, paddingRight: 6 },
+  categoryBook: {
+    width: 96,
+    height: 104,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.cream,
+    gap: 7,
+    padding: 7,
+    borderRadius: 13,
+    backgroundColor: '#8e1420',
+    borderWidth: 2,
+    borderColor: COLORS.gold,
+    shadowColor: COLORS.gold,
+    shadowOpacity: 0.28,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
-  categoryPillSelected: { backgroundColor: COLORS.green },
-  categoryText: { color: '#665f50', fontFamily: 'NunitoBold', fontSize: 12 },
-  categoryTextSelected: { color: '#fff8e9' },
+  categoryBookSongs: { backgroundColor: COLORS.green },
+  categoryBookSelected: { backgroundColor: COLORS.green, borderColor: '#ffe49a', shadowOpacity: 0.72, shadowRadius: 11, elevation: 5, transform: [{ translateY: -3 }] },
+  categoryBookIconFrame: { width: 50, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1, borderColor: 'rgba(244,200,106,0.72)', backgroundColor: 'rgba(23,6,5,0.22)' },
+  categoryBookIconFrameSelected: { borderColor: '#ffe7a3', backgroundColor: 'rgba(0,25,15,0.4)' },
+  categoryBookLabel: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 12, textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 3 },
+  categoryBookRibbon: { position: 'absolute', bottom: -10, width: 16, height: 17, backgroundColor: COLORS.red, borderBottomLeftRadius: 3, borderBottomRightRadius: 3 },
   sectionHeading: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -665,34 +774,38 @@ const styles = StyleSheet.create({
   artistCollectionsScroll: { flexGrow: 0, flexShrink: 0 },
   artistCollectionsRow: { flexDirection: 'row', gap: 13, paddingBottom: 2 },
   artistCollectionCard: { width: 136 },
-  artistCollectionArt: { width: 136, height: 136, borderRadius: 14, backgroundColor: '#d9c7a4' },
-  artistCollectionName: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 13, marginTop: 6 },
-  artistCollectionCount: { color: '#5e5548', fontFamily: 'NunitoRegular', fontSize: 11, marginTop: 1 },
+  artistCollectionArt: { width: 136, height: 136, borderRadius: 14, borderWidth: 2, borderColor: COLORS.gold, backgroundColor: '#123a2a' },
+  artistCollectionName: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 14, marginTop: 6 },
+  artistCollectionCount: { color: COLORS.gold, fontFamily: 'NunitoSemiBold', fontSize: 12, marginTop: 1 },
   homeAlbumsScroll: { flexGrow: 0, flexShrink: 0 },
   homeAlbumsRow: { flexDirection: 'row', gap: 14, paddingBottom: 2 },
   homeAlbumCard: { width: 166 },
-  homeAlbumArt: { width: 166, height: 166, borderRadius: 12, backgroundColor: '#d9c7a4' },
-  homeAlbumTitle: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 14, marginTop: 7 },
-  homeAlbumSubtitle: { color: '#5e5548', fontFamily: 'NunitoRegular', fontSize: 12, marginTop: 1 },
-  sectionTitle: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 17 },
-  seeAll: { color: COLORS.green, fontFamily: 'NunitoBold', fontSize: 12 },
-  recentScroll: { height: 132, flexGrow: 0, flexShrink: 0 },
+  homeAlbumArt: { width: 166, height: 166, borderRadius: 14, borderWidth: 2, borderColor: COLORS.gold, backgroundColor: '#123a2a' },
+  homeAlbumTitle: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 14, marginTop: 7 },
+  homeAlbumSubtitle: { color: COLORS.gold, fontFamily: 'NunitoSemiBold', fontSize: 12, marginTop: 1 },
+  sectionTitle: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 19, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 5 },
+  headingSnowflake: { color: COLORS.gold, fontSize: 17, textShadowColor: COLORS.gold, textShadowRadius: 7 },
+  seeAllRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  seeAll: { color: COLORS.gold, fontFamily: 'NunitoExtraBold', fontSize: 13, textShadowColor: 'rgba(0,0,0,0.45)', textShadowRadius: 4 },
+  recentScroll: { height: 151, flexGrow: 0, flexShrink: 0 },
   recentRow: { flexDirection: 'row', gap: 11 },
   albumCard: { width: 104 },
-  albumArt: { width: '100%', aspectRatio: 1.25, borderRadius: 10, backgroundColor: '#d9c7a4' },
-  albumTitle: { color: COLORS.ink, fontFamily: 'NunitoBold', fontSize: 12, marginTop: 4 },
-  albumSubtitle: { color: '#5e5548', fontFamily: 'NunitoRegular', fontSize: 11 },
-  recentEmpty: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, paddingHorizontal: 16, borderRadius: 12, backgroundColor: 'rgba(255,248,233,0.72)' },
-  recentEmptyText: { color: '#5e5548', fontFamily: 'NunitoSemiBold', fontSize: 12, flexShrink: 1 },
+  albumArt: { width: '100%', aspectRatio: 1, borderRadius: 12, borderWidth: 2, borderColor: COLORS.gold, backgroundColor: '#123a2a' },
+  albumTitle: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 13, marginTop: 6, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 4 },
+  albumSubtitle: { color: COLORS.gold, fontFamily: 'NunitoSemiBold', fontSize: 12 },
+  recentEmpty: { minHeight: 55, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, paddingHorizontal: 16, borderRadius: 12, borderWidth: 1, borderColor: COLORS.gold, backgroundColor: 'rgba(5,35,24,0.78)' },
+  recentEmptyText: { color: COLORS.cream, fontFamily: 'NunitoSemiBold', fontSize: 12, flexShrink: 1 },
   songsHeading: { marginTop: 12, marginBottom: 8 },
   headingTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   countBadge: {
-    backgroundColor: 'rgba(22, 77, 56, 0.12)',
+    backgroundColor: 'rgba(5, 35, 24, 0.72)',
     paddingHorizontal: 7,
     paddingVertical: 1,
     borderRadius: 9,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
   },
-  countBadgeText: { color: COLORS.green, fontFamily: 'NunitoBold', fontSize: 11 },
+  countBadgeText: { color: COLORS.gold, fontFamily: 'NunitoBold', fontSize: 11 },
   searchLink: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   alphabetBarWrapper: { marginBottom: 10 },
   alphabetBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 },
@@ -703,13 +816,13 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 248, 233, 0.72)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(75, 59, 37, 0.14)',
+    backgroundColor: 'rgba(5, 35, 24, 0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(244, 200, 106, 0.6)',
   },
   letterPillSelected: {
-    backgroundColor: COLORS.green,
-    borderColor: COLORS.green,
+    backgroundColor: COLORS.red,
+    borderColor: COLORS.gold,
   },
   letterPillDisabled: {
     opacity: 0.32,
@@ -722,7 +835,7 @@ const styles = StyleSheet.create({
   letterHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8, marginTop: 4 },
   letterBadge: { width: 22, height: 22, borderRadius: 11, backgroundColor: COLORS.green, alignItems: 'center', justifyContent: 'center' },
   letterBadgeText: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 11 },
-  letterLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(75, 59, 37, 0.16)' },
+  letterLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(244, 200, 106, 0.55)' },
   letterCount: { color: COLORS.muted, fontFamily: 'NunitoSemiBold', fontSize: 11 },
   sectionSongs: { gap: 8 },
   emptyFilter: {
@@ -730,8 +843,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 24,
     gap: 8,
-    backgroundColor: 'rgba(255, 248, 233, 0.7)',
+    backgroundColor: 'rgba(5, 35, 24, 0.82)',
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
   },
   emptyFilterText: { color: COLORS.ink, fontFamily: 'NunitoBold', fontSize: 13 },
   clearFilterButton: {
@@ -743,35 +858,39 @@ const styles = StyleSheet.create({
   },
   clearFilterText: { color: COLORS.cream, fontFamily: 'NunitoBold', fontSize: 11 },
   songList: { gap: 8 },
-  emptySongs: { alignItems: 'center', paddingHorizontal: 18, paddingVertical: 24, borderRadius: 14, backgroundColor: 'rgba(255,248,233,0.86)' },
+  emptySongs: { alignItems: 'center', paddingHorizontal: 18, paddingVertical: 24, borderRadius: 14, borderWidth: 1, borderColor: COLORS.gold, backgroundColor: 'rgba(5,35,24,0.84)' },
   emptySongsTitle: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 14, marginTop: 8, textAlign: 'center' },
   emptySongsMessage: { color: COLORS.muted, fontFamily: 'NunitoRegular', fontSize: 12, lineHeight: 17, marginTop: 4, textAlign: 'center' },
   emptySongsButton: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 16, marginTop: 12, borderRadius: 18, backgroundColor: COLORS.green },
   emptySongsButtonText: { color: COLORS.cream, fontFamily: 'NunitoBold', fontSize: 12 },
   songRow: { minHeight: 50, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  songArt: { width: 44, height: 44, borderRadius: 7, backgroundColor: '#d9c7a4' },
+  songArt: { width: 44, height: 44, borderRadius: 8, borderWidth: 1.5, borderColor: COLORS.gold, backgroundColor: '#123a2a' },
   songDetails: { flex: 1, minWidth: 0 },
   songTitle: { color: COLORS.ink, fontFamily: 'NunitoBold', fontSize: 12 },
-  songArtist: { color: '#655c4e', fontFamily: 'NunitoRegular', fontSize: 11 },
+  songArtist: { color: COLORS.gold, fontFamily: 'NunitoRegular', fontSize: 11 },
   playButton: {
     width: 28,
     height: 28,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.cream,
+    backgroundColor: 'rgba(244, 200, 106, 0.16)',
+    borderWidth: 1,
+    borderColor: COLORS.gold,
   },
   bottomBar: {
-    minHeight: 64,
+    minHeight: 70,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
     paddingTop: 9,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(75, 59, 37, 0.22)',
-    backgroundColor: COLORS.cream,
+    borderTopWidth: 1.5,
+    borderTopColor: COLORS.gold,
+    backgroundColor: COLORS.red,
   },
   tab: { flex: 1, minWidth: 0, alignItems: 'center', gap: 2 },
-  tabLabel: { color: COLORS.muted, fontFamily: 'NunitoSemiBold', fontSize: 11 },
-  tabLabelSelected: { color: COLORS.red, fontFamily: 'NunitoExtraBold' },
+  tabIndicator: { width: 42, height: 3, marginTop: 2, borderRadius: 2, backgroundColor: 'transparent' },
+  tabIndicatorActive: { backgroundColor: COLORS.gold, shadowColor: COLORS.gold, shadowOpacity: 0.8, shadowRadius: 6, elevation: 3 },
+  tabLabel: { color: COLORS.gold, fontFamily: 'NunitoSemiBold', fontSize: 11 },
+  tabLabelSelected: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', textShadowColor: COLORS.gold, textShadowRadius: 5 },
 });

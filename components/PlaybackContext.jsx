@@ -1,12 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { setAudioModeAsync, useAudioPlaylist, useAudioPlaylistStatus } from 'expo-audio';
+import { useVideoPlayer } from 'expo-video';
 import { useEventListener } from 'expo';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getLocalLibraryId } from './localLibraryIdentity';
 import { getFolderLabel, importSelectedAudioFiles, listImportedAudio, scanMusicFolder, selectMusicFolder } from './localMusicLibrary';
 import { addRecentlyPlayed, getRecentlyPlayed } from './recentlyPlayed';
 import { addSavedTrackArtwork, pickTrackArtwork, removeTrackArtwork } from './trackArtwork';
+import homeVideo from '../assets/youtube-video.mp4';
 
 const musicFolderKey = (libraryId) => `music-player.music-folder-uri:${libraryId}`;
 const EMPTY_TRACKS = [];
@@ -14,8 +17,12 @@ const EMPTY_TRACKS = [];
 const PlaybackContext = createContext(null);
 
 export function PlaybackProvider({ children }) {
+  const homeVideoPlayer = useVideoPlayer(homeVideo, (videoPlayer) => {
+    videoPlayer.loop = true;
+  });
   const hasStartedPlayback = useRef(false);
   const pendingTrackStart = useRef(null);
+  const audioModeReady = useRef(null);
   const originalTracksRef = useRef(EMPTY_TRACKS);
   const [currentTrack, setCurrentTrack] = useState(null);
   const [tracks, setTracks] = useState(EMPTY_TRACKS);
@@ -30,17 +37,73 @@ export function PlaybackProvider({ children }) {
   const status = useAudioPlaylistStatus(player);
   const playerRef = useRef(player);
 
+  const configureAudioMode = useCallback(() => {
+    if (!audioModeReady.current) {
+      audioModeReady.current = setAudioModeAsync({
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        interruptionMode: 'doNotMix',
+      }).catch((error) => {
+        audioModeReady.current = null;
+        throw error;
+      });
+    }
+    return audioModeReady.current;
+  }, []);
+
+  const activateLockScreenControls = useCallback(async (track, queueTracks, recentItem) => {
+    // Expo Go does not contain this app's AudioControlsService. Trying to bind
+    // its Android media session from Expo Go logs a service-binding error.
+    if (Platform.OS === 'web' || (Platform.OS === 'android' && Constants.executionEnvironment === ExecutionEnvironment.StoreClient)) return;
+
+    // The native media session must be configured after the audio mode is ready.
+    // Otherwise Android can start playback before Expo Audio has the session ready.
+    await configureAudioMode();
+
+    const artworkUrl = typeof track?.artwork === 'string' ? track.artwork : track?.artwork?.uri;
+    const metadata = {
+      title: track?.title || 'Unknown track',
+      artist: track?.artist || 'Unknown artist',
+      albumTitle: track?.album || recentItem?.title || 'MistleTunes',
+      ...(artworkUrl ? { artworkUrl } : {}),
+    };
+
+    try {
+      player.setActiveForLockScreen(true, metadata, {
+        showNextTrack: queueTracks.length > 1,
+        showPreviousTrack: queueTracks.length > 1,
+        showSeekBackward: true,
+        showSeekForward: true,
+      });
+    } catch (error) {
+      console.warn('Could not activate Android media controls:', error);
+    }
+  }, [configureAudioMode, player]);
+
   useEffect(() => {
     playerRef.current = player;
   }, [player]);
 
   useEffect(() => {
-    setAudioModeAsync({
-      playsInSilentMode: true,
-      shouldPlayInBackground: true,
-      interruptionMode: 'doNotMix',
-    }).catch(() => {});
-  }, []);
+    configureAudioMode().catch((error) => {
+      console.warn('Could not configure background audio:', error);
+    });
+  }, [configureAudioMode]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web' || (Platform.OS === 'android' && Constants.executionEnvironment === ExecutionEnvironment.StoreClient)) return;
+    if (!currentTrack) {
+      player.clearLockScreenControls();
+      return;
+    }
+
+    activateLockScreenControls(currentTrack, queue.tracks, queue.recentItem).catch(() => {});
+  }, [activateLockScreenControls, currentTrack, player, queue.recentItem, queue.tracks]);
+
+  useEffect(() => {
+    if (!status.playing || !currentTrack) return;
+    activateLockScreenControls(currentTrack, queue.tracks, queue.recentItem).catch(() => {});
+  }, [activateLockScreenControls, currentTrack, queue.recentItem, queue.tracks, status.playing]);
 
   useEventListener(player, 'trackChanged', ({ currentIndex }) => {
     if (!hasStartedPlayback.current) return;
@@ -54,9 +117,14 @@ export function PlaybackProvider({ children }) {
     const index = queue.tracks.findIndex((track) => track.id === pendingTrackId);
     if (index < 0) return;
     pendingTrackStart.current = null;
-    player.skipTo(index);
-    player.play();
-  }, [player, queue]);
+    const track = queue.tracks[index];
+    activateLockScreenControls(track, queue.tracks, queue.recentItem).then(() => {
+      player.skipTo(index);
+      player.play();
+    }).catch((error) => {
+      console.warn('Could not start playlist playback:', error);
+    });
+  }, [activateLockScreenControls, player, queue]);
 
   useEffect(() => {
     let active = true;
@@ -184,14 +252,18 @@ export function PlaybackProvider({ children }) {
       && queue.tracks.every((item, itemIndex) => item.id === queueTracks[itemIndex]?.id);
     if (queueMatches) {
       setQueue({ tracks: queueTracks, kind, recentItem });
-      player.skipTo(index);
-      player.play();
+      activateLockScreenControls(track, queueTracks, recentItem).then(() => {
+        player.skipTo(index);
+        player.play();
+      }).catch((error) => {
+        console.warn('Could not start playlist playback:', error);
+      });
     } else {
       pendingTrackStart.current = track.id;
       setQueue({ tracks: queueTracks, kind, recentItem });
     }
     return true;
-  }, [libraryId, player, queue]);
+  }, [activateLockScreenControls, libraryId, player, queue]);
 
   const playTrack = useCallback((track) => {
     setShuffleEnabled(false);
@@ -271,6 +343,7 @@ export function PlaybackProvider({ children }) {
   }, [player]);
 
   const value = useMemo(() => ({
+    homeVideoPlayer,
     currentTrack,
     editTrackArtwork,
     clearTrackArtwork,
@@ -297,7 +370,7 @@ export function PlaybackProvider({ children }) {
     toggleLoopMode,
     stopPlayback,
     seekTo: (seconds) => player.seekTo(seconds),
-  }), [libraryId, addAudioFiles, chooseMusicFolder, clearTrackArtwork, currentTrack, editTrackArtwork, loopMode, musicFolderUri, player, playQueue, playTrack, recentlyPlayed, rescanMusicFolder, shuffleEnabled, toggleShuffle, toggleLoopMode, queue.tracks.length, skip, status.currentTime, status.duration, status.playing, stopPlayback, togglePlayback, tracks]);
+  }), [homeVideoPlayer, libraryId, addAudioFiles, chooseMusicFolder, clearTrackArtwork, currentTrack, editTrackArtwork, loopMode, musicFolderUri, player, playQueue, playTrack, recentlyPlayed, rescanMusicFolder, shuffleEnabled, toggleShuffle, toggleLoopMode, queue.tracks.length, skip, status.currentTime, status.duration, status.playing, stopPlayback, togglePlayback, tracks]);
 
   return <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>;
 }

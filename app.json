@@ -1,7 +1,8 @@
 {
   "expo": {
-    "name": "music-player",
+    "name": "MistleTunes",
     "slug": "music-player",
+    "owner": "bangonon",
     "scheme": "musicplayer",
     "version": "1.0.0",
     "runtimeVersion": "1.0.0",
@@ -13,16 +14,23 @@
     },
     "android": {
       "permissions": [
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/icon.png",
-        "backgroundImage": "./assets/icon.png",
-        "monochromeImage": "./assets/icon.png"
+        "backgroundColor": "#073c2c",
+        "foregroundImage": "./assets/mistletunes_adaptive_foreground.png"
       },
       "package": "com.benchtadeo30steam.musicplayer",
-      "versionCode": 2
+      "versionCode": 3
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -47,12 +55,17 @@
       "expo-video"
     ],
     "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
       "eas": {
-        "projectId": "d5417430-d115-4abc-b2fa-36c41d8e1a5a"
+        "projectId": "975a181a-3dd2-49d7-aada-d5ff8d79c8ee"
       }
     },
     "updates": {
-      "url": "https://u.expo.dev/d5417430-d115-4abc-b2fa-36c41d8e1a5a"
+      "url": "https://u.expo.dev/975a181a-3dd2-49d7-aada-d5ff8d79c8ee"
     }
   }
 }
