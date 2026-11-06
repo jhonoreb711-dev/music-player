@@ -17,8 +17,59 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import { usePlayback } from './PlaybackContext';
 import { HOME_VIDEO_NAME_KEY, HOME_VIDEO_URI_KEY } from './homeVideoStorage';
+import { getPodcastVideos, savePodcastVideos } from './podcastVideoStorage';
 
 import settingsBackground from '../assets/Steampunk_Christmas_Music_Workshop.gif';
+import defaultHomeVideo from '../assets/youtube-video.mp4';
+
+function getVideoAssetInfo(asset, fallbackName) {
+  const uriName = asset.uri?.split(/[?#]/)[0]?.split('/').pop() || '';
+  let name = (asset.name || uriName).trim();
+  try {
+    name = decodeURIComponent(name);
+  } catch {}
+
+  const extension = name.match(/\.[a-z0-9]{2,5}$/i)?.[0] || '.mp4';
+  if (!name) name = `${fallbackName}${extension}`;
+  else if (!/\.[a-z0-9]{2,5}$/i.test(name)) name = `${name}${extension}`;
+
+  // The picker is already restricted to video/*; some Android providers return
+  // a generic MIME type or no filename extension, so trust the selected asset.
+  return { name, extension };
+}
+
+async function pickVideoAssets(multiple = false) {
+  // Ask DocumentPicker to make an app-readable cache copy. Android providers
+  // often return content:// URIs whose temporary read grant isn't valid for a
+  // later File.copy call.
+  const result = await DocumentPicker.getDocumentAsync({
+    type: 'video/*',
+    multiple,
+    copyToCacheDirectory: true,
+  });
+  if (result.canceled) return result;
+  return {
+    ...result,
+    assets: result.assets.map((asset) => ({ ...asset, file: new File(asset.uri) })),
+  };
+}
+
+async function copyVideoIntoApp(source, destination) {
+  try {
+    await source.copy(destination);
+  } catch (copyError) {
+    // Some Android document providers reject the native copy operation even
+    // when the picker can stream the cached file. Stream in small chunks so
+    // large videos do not need to be loaded into memory all at once.
+    try {
+      if (destination.exists) destination.delete();
+      destination.create();
+      await source.stream().pipeTo(destination.writableStream());
+    } catch (streamError) {
+      throw new Error(streamError?.message || copyError?.message || 'Android could not read the selected video. Try saving it to Downloads, then select it again.');
+    }
+  }
+}
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -26,45 +77,120 @@ export default function SettingsScreen() {
   const [isScanning, setIsScanning] = useState(false);
   const [homeVideoName, setHomeVideoName] = useState('youtube-video.mp4');
   const [isChoosingVideo, setIsChoosingVideo] = useState(false);
+  const [podcastVideos, setPodcastVideos] = useState([]);
+  const [isChoosingPodcastVideos, setIsChoosingPodcastVideos] = useState(false);
   const scanInProgress = useRef(false);
-  const { tracks, musicFolderName, chooseMusicFolder, rescanMusicFolder, addAudioFiles } = usePlayback();
+  const { tracks, homeVideoPlayer, musicFolderName, chooseMusicFolder, rescanMusicFolder, addAudioFiles } = usePlayback();
 
   useEffect(() => {
     AsyncStorage.getItem(HOME_VIDEO_NAME_KEY).then((name) => {
       if (name) setHomeVideoName(name);
     }).catch(() => {});
+    getPodcastVideos().then(setPodcastVideos);
   }, []);
+
+  const choosePodcastVideos = async (existingVideo = null) => {
+    if (isChoosingPodcastVideos) return;
+    setIsChoosingPodcastVideos(true);
+    const copiedFiles = [];
+    setStatusMessage('Opening video picker...');
+    try {
+      const result = await pickVideoAssets(!existingVideo);
+      if (result.canceled) {
+        setStatusMessage('No podcast videos selected.');
+        return;
+      }
+
+      const imported = [];
+      for (const [index, asset] of result.assets.entries()) {
+        const info = getVideoAssetInfo(asset, `podcast-video-${Date.now()}-${index}`);
+        const id = existingVideo?.id ?? `${Date.now()}-${index}`;
+        const storedFile = new File(Paths.document, `podcast-video-${id}-${Date.now()}${info.extension}`);
+        await copyVideoIntoApp(asset.file, storedFile);
+        if (!storedFile.exists) throw new Error(`Could not copy ${info.name} into the app.`);
+        copiedFiles.push(storedFile);
+        imported.push({ id, name: info.name, uri: storedFile.uri });
+        if (existingVideo) break;
+      }
+
+      if (!imported.length) {
+        setStatusMessage('Select one or more video files for your podcast list.');
+        return;
+      }
+
+      const updatedVideos = existingVideo
+        ? podcastVideos.map((video) => video.id === existingVideo.id ? imported[0] : video)
+        : [...podcastVideos, ...imported];
+      await savePodcastVideos(updatedVideos);
+      setPodcastVideos(updatedVideos);
+
+      if (existingVideo) {
+        try {
+          const oldFile = new File(existingVideo.uri);
+          if (oldFile.exists) oldFile.delete();
+        } catch {}
+        setStatusMessage(`Updated podcast video: ${imported[0].name}`);
+      } else {
+        setStatusMessage(`Added ${imported.length} podcast ${imported.length === 1 ? 'video' : 'videos'}.`);
+      }
+    } catch (error) {
+      copiedFiles.forEach((file) => {
+        try { if (file.exists) file.delete(); } catch {}
+      });
+      setStatusMessage(error.message || 'Could not update podcast videos.');
+    } finally {
+      setIsChoosingPodcastVideos(false);
+    }
+  };
+
+  const removePodcastVideo = async (video) => {
+    const updatedVideos = podcastVideos.filter((item) => item.id !== video.id);
+    try {
+      await savePodcastVideos(updatedVideos);
+      setPodcastVideos(updatedVideos);
+      try {
+        const storedFile = new File(video.uri);
+        if (storedFile.exists) storedFile.delete();
+      } catch {}
+      setStatusMessage(`Removed podcast video: ${video.name}`);
+    } catch (error) {
+      setStatusMessage(error.message || 'Could not remove that podcast video.');
+    }
+  };
 
   const chooseHomeVideo = async () => {
     if (isChoosingVideo) return;
     setIsChoosingVideo(true);
+    setStatusMessage('Opening video picker...');
     try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: 'video/mp4',
-        copyToCacheDirectory: true,
-      });
-      if (result.canceled) return;
-
-      const selected = result.assets[0];
-      if (!selected.name.toLowerCase().endsWith('.mp4')) {
-        setStatusMessage('Please select an MP4 video.');
+      const result = await pickVideoAssets();
+      if (result.canceled) {
+        setStatusMessage('No home video selected.');
         return;
       }
 
-      const sourceFile = new File(selected.uri);
+      const selected = result.assets[0];
+      const info = getVideoAssetInfo(selected, `home-video-${Date.now()}`);
+
+      const sourceFile = selected.file;
       const previousUri = await AsyncStorage.getItem(HOME_VIDEO_URI_KEY);
-      const savedVideo = new File(Paths.document, `home-screen-video-${Date.now()}.mp4`);
-      await sourceFile.copy(savedVideo);
+      const savedVideo = new File(Paths.document, `home-screen-video-${Date.now()}${info.extension}`);
+      await copyVideoIntoApp(sourceFile, savedVideo);
+      if (!savedVideo.exists) throw new Error(`Could not copy ${info.name} into the app.`);
       await AsyncStorage.multiSet([
         [HOME_VIDEO_URI_KEY, savedVideo.uri],
-        [HOME_VIDEO_NAME_KEY, selected.name],
+        [HOME_VIDEO_NAME_KEY, info.name],
       ]);
+      try {
+        await homeVideoPlayer.replaceAsync(savedVideo.uri);
+        homeVideoPlayer.pause();
+      } catch {}
       if (previousUri && previousUri !== savedVideo.uri) {
         const previousVideo = new File(previousUri);
         if (previousVideo.exists) previousVideo.delete();
       }
-      setHomeVideoName(selected.name);
-      setStatusMessage('Home video updated. Return to Home to see it.');
+      setHomeVideoName(info.name);
+      setStatusMessage('Home video saved. Return to Home to load it.');
     } catch (error) {
       setStatusMessage(error.message || 'Could not change the home video.');
     } finally {
@@ -76,6 +202,8 @@ export default function SettingsScreen() {
     try {
       const previousUri = await AsyncStorage.getItem(HOME_VIDEO_URI_KEY);
       await AsyncStorage.multiRemove([HOME_VIDEO_URI_KEY, HOME_VIDEO_NAME_KEY]);
+      await homeVideoPlayer.replaceAsync(defaultHomeVideo);
+      homeVideoPlayer.pause();
       if (previousUri) {
         const previousVideo = new File(previousUri);
         if (previousVideo.exists) previousVideo.delete();
@@ -143,6 +271,11 @@ export default function SettingsScreen() {
             <Text style={styles.ornamentText}>✦  ♫  ✦</Text>
             <View style={styles.ornamentLine} />
           </View>
+          {statusMessage ? (
+            <View accessibilityRole="text" style={styles.statusBox}>
+              <Text style={styles.statusText}>{statusMessage}</Text>
+            </View>
+          ) : null}
         </View>
 
         <ScrollView
@@ -204,7 +337,7 @@ export default function SettingsScreen() {
               <View style={styles.card}>
                 <Text style={styles.fieldLabel}>Current video</Text>
                 <Text style={styles.helperText} numberOfLines={1}>{homeVideoName}</Text>
-                <Text style={styles.helperText}>Choose an MP4 video from your device. It will play on Home when no song is playing.</Text>
+                <Text style={styles.helperText}>Choose a video from your device. It will play on Home when no song is playing.</Text>
                 <Pressable
                   accessibilityRole="button"
                   disabled={isChoosingVideo}
@@ -223,13 +356,55 @@ export default function SettingsScreen() {
                   <Text style={styles.secondaryButtonText}>Restore default video</Text>
                 </Pressable>
               </View>
-            </>
-          ) : null}
 
-          {statusMessage ? (
-            <View accessibilityRole="text" style={styles.statusBox}>
-              <Text style={styles.statusText}>{statusMessage}</Text>
-            </View>
+              <View style={styles.sectionBannerWrap}>
+                <View style={styles.sectionBannerIcon}><Ionicons name="film" size={22} color={COLORS.gold} /></View>
+                <Text style={styles.sectionBannerText}>Podcast videos</Text>
+                <Text style={styles.sectionBannerFlourish}>â„</Text>
+              </View>
+              <View style={styles.card}>
+                <Text style={styles.fieldLabel}>Your podcast collection</Text>
+                <Text style={styles.helperText}>Add videos here. They will appear in the Podcast list.</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isChoosingPodcastVideos}
+                  onPress={() => choosePodcastVideos()}
+                  style={({ pressed }) => [styles.secondaryButton, styles.folderButton, pressed && styles.pressed, isChoosingPodcastVideos && styles.disabled]}
+                >
+                  <Ionicons name="add-circle-outline" size={19} color={COLORS.cream} />
+                  <Text style={styles.secondaryButtonText}>{isChoosingPodcastVideos ? 'Opening videos...' : 'Add podcast videos'}</Text>
+                </Pressable>
+                {podcastVideos.length ? (
+                  <View style={styles.podcastVideoList}>
+                    {podcastVideos.map((video) => (
+                      <View key={video.id} style={styles.podcastVideoRow}>
+                        <View style={styles.podcastVideoIcon}><Ionicons name="videocam" size={18} color={COLORS.gold} /></View>
+                        <Text numberOfLines={1} style={styles.podcastVideoName}>{video.name}</Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Replace ${video.name}`}
+                          disabled={isChoosingPodcastVideos}
+                          onPress={() => choosePodcastVideos(video)}
+                          style={styles.podcastVideoAction}
+                        >
+                          <Ionicons name="create-outline" size={19} color={COLORS.green} />
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Remove ${video.name}`}
+                          onPress={() => removePodcastVideo(video)}
+                          style={styles.podcastVideoAction}
+                        >
+                          <Ionicons name="trash-outline" size={18} color={COLORS.red} />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.helperText}>No podcast videos added yet.</Text>
+                )}
+              </View>
+            </>
           ) : null}
 
         </ScrollView>
@@ -308,6 +483,12 @@ const styles = StyleSheet.create({
   input: { minHeight: 38, paddingVertical: 5, color: COLORS.ink, fontFamily: 'NunitoSemiBold', fontSize: 14 },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.line, marginVertical: 7 },
   helperText: { color: COLORS.ink, fontFamily: 'NunitoRegular', fontSize: 12, lineHeight: 17, marginTop: 3, marginBottom: 8 },
+  disabled: { opacity: 0.6 },
+  podcastVideoList: { gap: 7, marginTop: 2 },
+  podcastVideoRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 8, borderRadius: 12, backgroundColor: 'rgba(7,80,44,0.08)' },
+  podcastVideoIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: COLORS.green },
+  podcastVideoName: { flex: 1, minWidth: 0, color: COLORS.ink, fontFamily: 'NunitoSemiBold', fontSize: 12 },
+  podcastVideoAction: { width: 32, height: 38, alignItems: 'center', justifyContent: 'center' },
   secondaryButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, paddingHorizontal: 12, borderWidth: 2, borderColor: COLORS.gold, borderRadius: 24, backgroundColor: COLORS.green, shadowColor: COLORS.gold, shadowOpacity: 0.32, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
   folderButton: { marginBottom: 10 },
   secondaryButtonText: { color: COLORS.cream, fontFamily: 'NunitoExtraBold', fontSize: 13 },

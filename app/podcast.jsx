@@ -8,16 +8,14 @@ import {
   Text,
   View,
 } from 'react-native';
-import { ImageBackground } from 'expo-image';
+import { Image, ImageBackground } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as DocumentPicker from 'expo-document-picker';
-import { File, Paths } from 'expo-file-system';
 
 import christmasBackground from '../assets/christmas_bg4.png';
-import { getPodcastVideos, savePodcastVideos } from '../components/podcastVideoStorage';
+import { getPodcastVideos } from '../components/podcastVideoStorage';
 
 const COLORS = {
   green: '#164d38',
@@ -31,80 +29,14 @@ export default function PodcastScreen() {
   const insets = useSafeAreaInsets();
   const [videos, setVideos] = useState([]);
   const [selectedVideo, setSelectedVideo] = useState(null);
-  const [isPicking, setIsPicking] = useState(false);
-  const [message, setMessage] = useState('');
 
-  useEffect(() => {
-    getPodcastVideos().then(setVideos);
-  }, []);
-
-  const persist = useCallback(async (updatedVideos) => {
-    setVideos(updatedVideos);
-    try {
-      await savePodcastVideos(updatedVideos);
-      setMessage('');
-    } catch {
-      setMessage('Could not save your video list.');
-    }
-  }, []);
-
-  const chooseVideo = async (existingVideo = null) => {
-    if (isPicking) return;
-    setIsPicking(true);
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: 'video/mp4',
-        multiple: !existingVideo,
-        copyToCacheDirectory: true,
-      });
-      if (result.canceled) return;
-
-      const imported = [];
-      for (const [index, asset] of result.assets.entries()) {
-        if (!asset.name?.toLowerCase().endsWith('.mp4')) continue;
-        const id = `${Date.now()}-${index}`;
-        const storedFile = new File(Paths.document, `podcast-video-${id}.mp4`);
-        await new File(asset.uri).copy(storedFile);
-        imported.push({
-          id: existingVideo?.id ?? id,
-          name: asset.name,
-          uri: storedFile.uri,
-        });
-      }
-
-      if (!imported.length) {
-        setMessage('Select an MP4 video to add.');
-        return;
-      }
-
-      const updatedVideos = existingVideo
-        ? videos.map((video) => video.id === existingVideo.id ? imported[0] : video)
-        : [...videos, ...imported];
-      await persist(updatedVideos);
-
-      if (existingVideo) {
-        try {
-          const oldFile = new File(existingVideo.uri);
-          if (oldFile.exists) oldFile.delete();
-        } catch {}
-        if (selectedVideo?.id === existingVideo.id) setSelectedVideo(imported[0]);
-      }
-    } catch (error) {
-      setMessage(error.message || 'Could not add that video.');
-    } finally {
-      setIsPicking(false);
-    }
-  };
-
-  const removeVideo = async (video) => {
-    const updatedVideos = videos.filter((item) => item.id !== video.id);
-    await persist(updatedVideos);
-    try {
-      const storedFile = new File(video.uri);
-      if (storedFile.exists) storedFile.delete();
-    } catch {}
-    if (selectedVideo?.id === video.id) setSelectedVideo(null);
-  };
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    getPodcastVideos().then((storedVideos) => {
+      if (active) setVideos(storedVideos);
+    });
+    return () => { active = false; };
+  }, []));
 
   return (
     <ImageBackground source={christmasBackground} contentFit="cover" style={styles.background}>
@@ -116,57 +48,15 @@ export default function PodcastScreen() {
           </Pressable>
           <View style={styles.headerTitles}>
             <Text style={styles.title}>Podcast videos</Text>
-            <Text style={styles.subtitle}>Your MP4 collection</Text>
+            <Text style={styles.subtitle}>Your video playlist</Text>
           </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add MP4 videos"
-            disabled={isPicking}
-            onPress={() => chooseVideo()}
-            style={[styles.addButton, isPicking && styles.disabledButton]}
-          >
-            <Ionicons name="add" size={25} color={COLORS.cream} />
-          </Pressable>
         </View>
 
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          {message ? <Text style={styles.message}>{message}</Text> : null}
           {videos.length ? (
             <View style={styles.videoList}>
               {videos.map((video) => (
-                <View key={video.id} style={styles.videoCard}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Play ${video.name}`}
-                    onPress={() => setSelectedVideo(video)}
-                    style={styles.videoMain}
-                  >
-                    <View style={styles.videoIcon}>
-                      <Ionicons name="play" size={20} color={COLORS.cream} />
-                    </View>
-                    <View style={styles.videoDetails}>
-                      <Text numberOfLines={1} style={styles.videoName}>{video.name}</Text>
-                      <Text style={styles.videoType}>MP4 video</Text>
-                    </View>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Replace ${video.name}`}
-                    disabled={isPicking}
-                    onPress={() => chooseVideo(video)}
-                    style={styles.actionButton}
-                  >
-                    <Ionicons name="create-outline" size={20} color={COLORS.green} />
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Remove ${video.name}`}
-                    onPress={() => removeVideo(video)}
-                    style={styles.actionButton}
-                  >
-                    <Ionicons name="trash-outline" size={19} color={COLORS.red} />
-                  </Pressable>
-                </View>
+                <PodcastVideoCard key={video.id} video={video} onPress={() => setSelectedVideo(video)} />
               ))}
             </View>
           ) : (
@@ -174,17 +64,8 @@ export default function PodcastScreen() {
               <View style={styles.emptyIcon}>
                 <Ionicons name="videocam-outline" size={34} color={COLORS.green} />
               </View>
-              <Text style={styles.emptyTitle}>Your video collection is ready</Text>
-              <Text style={styles.emptyMessage}>MP4 videos you add will be kept here. Add one whenever you’re ready.</Text>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => chooseVideo()}
-                disabled={isPicking}
-                style={[styles.emptyAddButton, isPicking && styles.disabledButton]}
-              >
-                <Ionicons name="add" size={20} color={COLORS.cream} />
-                <Text style={styles.emptyAddText}>{isPicking ? 'Opening videos…' : 'Add MP4 videos'}</Text>
-              </Pressable>
+              <Text style={styles.emptyTitle}>No podcast videos yet</Text>
+              <Text style={styles.emptyMessage}>Add MP4 videos from Settings. They will appear in this list.</Text>
             </View>
           )}
         </ScrollView>
@@ -221,6 +102,65 @@ export default function PodcastScreen() {
   );
 }
 
+function PodcastVideoCard({ video, onPress }) {
+  const player = useVideoPlayer(video.uri, (videoPlayer) => {
+    videoPlayer.muted = true;
+    videoPlayer.pause();
+  });
+  const [thumbnail, setThumbnail] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    let generating = false;
+    const createThumbnail = async () => {
+      if (generating || player.status !== 'readyToPlay') return;
+      generating = true;
+      try {
+        const thumbnails = await player.generateThumbnailsAsync([1], { maxWidth: 640, maxHeight: 360 });
+        if (active && thumbnails.length) setThumbnail(thumbnails[0]);
+      } catch {
+        // Keep the branded video placeholder if this codec/device cannot make a preview.
+      }
+    };
+    const subscription = player.addListener('statusChange', createThumbnail);
+    createThumbnail();
+    return () => {
+      active = false;
+      subscription.remove();
+      player.pause();
+    };
+  }, [player]);
+
+  return (
+    <View style={styles.videoCard}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Play ${video.name}`}
+        onPress={onPress}
+        style={({ pressed }) => [styles.videoMain, pressed && styles.videoPressed]}
+      >
+        <View style={styles.videoPreview}>
+          {thumbnail ? (
+            <Image source={thumbnail} contentFit="cover" style={styles.videoThumbnail} />
+          ) : (
+            <View style={styles.videoPlaceholder}>
+              <Ionicons name="videocam" size={36} color={COLORS.cream} />
+            </View>
+          )}
+          <View style={styles.videoPlayBadge}>
+            <Ionicons name="play" size={18} color={COLORS.cream} />
+          </View>
+          <View style={styles.videoTag}><Text style={styles.videoTagText}>VIDEO</Text></View>
+        </View>
+        <View style={styles.videoDetails}>
+          <Text numberOfLines={2} style={styles.videoName}>{video.name}</Text>
+          <Text style={styles.videoType}>Podcast video</Text>
+        </View>
+      </Pressable>
+    </View>
+  );
+}
+
 function PodcastVideoPlayer({ video, onClose }) {
   const player = useVideoPlayer(video.uri, (videoPlayer) => {
     videoPlayer.play();
@@ -246,24 +186,24 @@ const styles = StyleSheet.create({
   headerTitles: { flex: 1 },
   title: { color: COLORS.green, fontFamily: 'NunitoExtraBold', fontSize: 22 },
   subtitle: { color: COLORS.muted, fontFamily: 'NunitoSemiBold', fontSize: 12, marginTop: 1 },
-  addButton: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.green },
-  disabledButton: { opacity: 0.6 },
   content: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24 },
-  message: { color: COLORS.red, fontFamily: 'NunitoSemiBold', fontSize: 13, marginBottom: 12 },
-  videoList: { gap: 10 },
-  videoCard: { minHeight: 76, flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 16, backgroundColor: 'rgba(255,248,233,0.92)' },
-  videoMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, minWidth: 0 },
-  videoIcon: { width: 46, height: 46, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.green },
-  videoDetails: { flex: 1, minWidth: 0 },
+  videoList: { gap: 16 },
+  videoCard: { overflow: 'hidden', borderRadius: 16, backgroundColor: 'rgba(255,248,233,0.94)', borderWidth: 1, borderColor: 'rgba(22,77,56,0.18)' },
+  videoMain: { minWidth: 0 },
+  videoPressed: { opacity: 0.88 },
+  videoPreview: { width: '100%', aspectRatio: 16 / 9, overflow: 'hidden', backgroundColor: '#102b20', alignItems: 'center', justifyContent: 'center' },
+  videoThumbnail: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  videoPlaceholder: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.green },
+  videoPlayBadge: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', paddingLeft: 3, backgroundColor: 'rgba(0,0,0,0.62)', borderWidth: 1, borderColor: 'rgba(255,248,233,0.85)' },
+  videoTag: { position: 'absolute', right: 8, bottom: 8, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5, backgroundColor: 'rgba(0,0,0,0.72)' },
+  videoTagText: { color: '#fff', fontFamily: 'NunitoExtraBold', fontSize: 9, letterSpacing: 0.5 },
+  videoDetails: { minHeight: 54, justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 8 },
   videoName: { color: COLORS.ink, fontFamily: 'NunitoBold', fontSize: 14 },
   videoType: { color: COLORS.muted, fontFamily: 'NunitoRegular', fontSize: 12, marginTop: 2 },
-  actionButton: { width: 36, height: 40, alignItems: 'center', justifyContent: 'center' },
   emptyState: { flex: 1, minHeight: 330, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28, borderRadius: 24, backgroundColor: 'rgba(255,248,233,0.84)' },
   emptyIcon: { width: 72, height: 72, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(22,77,56,0.1)' },
   emptyTitle: { color: COLORS.ink, fontFamily: 'NunitoExtraBold', fontSize: 18, textAlign: 'center', marginTop: 18 },
   emptyMessage: { color: COLORS.muted, fontFamily: 'NunitoRegular', fontSize: 14, lineHeight: 21, textAlign: 'center', marginTop: 7 },
-  emptyAddButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 18, marginTop: 20, borderRadius: 22, backgroundColor: COLORS.green },
-  emptyAddText: { color: COLORS.cream, fontFamily: 'NunitoBold', fontSize: 14 },
   bottomBar: { minHeight: 64, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingTop: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(75,59,37,0.22)', backgroundColor: COLORS.cream },
   tab: { flex: 1, minWidth: 0, alignItems: 'center', gap: 2 },
   tabLabel: { color: COLORS.muted, fontFamily: 'NunitoSemiBold', fontSize: 11 },
